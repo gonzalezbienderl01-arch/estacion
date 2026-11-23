@@ -1,0 +1,7 @@
+build/
+estacion
+estacion.db
+estacion.db-wal
+estacion.db-shm
+*.o
+.env
