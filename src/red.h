@@ -14,11 +14,12 @@ typedef struct {
     char  host[128];
     char  token[128];
     char  matricula[32];
+    char  error[CURL_ERROR_SIZE];   /* texto del ultimo error que reporto curl */
 } Red;
 
 /* Resultado de una peticion HTTP. */
 typedef struct {
-    char *datos;        /* cuerpo, siempre terminado en '\0' si red_get devuelve 0 */
+    char *datos;        /* cuerpo, siempre terminado en '\0' si la funcion devuelve 0 */
     size_t largo;
     long  codigo_http;
 } Respuesta;
@@ -31,6 +32,9 @@ void red_cerrar(Red *red);
 /* GET autenticado. Devuelve 0 si hubo respuesta HTTP (revisa resp->codigo_http),
  * -1 si falla el nivel de red (CURLcode distinto de CURLE_OK). */
 int  red_get(Red *red, const char *ruta, Respuesta *resp);
+
+/* POST autenticado con cuerpo JSON. Mismo criterio de retorno que red_get. */
+int  red_post_json(Red *red, const char *ruta, const char *json, Respuesta *resp);
 
 void respuesta_liberar(Respuesta *resp);
 

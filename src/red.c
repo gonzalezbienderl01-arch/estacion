@@ -53,6 +53,7 @@ static size_t al_recibir(char *ptr, size_t size, size_t nmemb, void *ud)
     return n;                           /* siempre size * nmemb */
 }
 
+/* Opciones que valen para todas las peticiones (se ponen una sola vez). */
 static int configurar_handle(Red *red)
 {
     CURL *h = red->curl;
@@ -64,6 +65,7 @@ static int configurar_handle(Red *red)
     OPCION(h, CURLOPT_HTTPAUTH, (long)CURLAUTH_BEARER);
     OPCION(h, CURLOPT_XOAUTH2_BEARER, red->token);
     OPCION(h, CURLOPT_WRITEFUNCTION, al_recibir);
+    OPCION(h, CURLOPT_ERRORBUFFER, red->error);
     return 0;
 }
 
@@ -111,37 +113,43 @@ void red_cerrar(Red *red)
     }
 }
 
-int red_get(Red *red, const char *ruta, Respuesta *resp)
+void respuesta_liberar(Respuesta *resp)
 {
-    char url[256];
-    char err[CURL_ERROR_SIZE] = "";
+    free(resp->datos);
+    resp->datos = NULL;
+    resp->largo = 0;
+}
 
+/* Deja la respuesta vacia y arma la URL completa. */
+static int preparar(const Red *red, const char *ruta, char *url, size_t tam,
+                    Respuesta *resp)
+{
     resp->datos = NULL;
     resp->largo = 0;
     resp->codigo_http = 0;
 
-    int n = snprintf(url, sizeof url, "http://%s:%d%s",
-                     red->host, RED_PUERTO_HTTP, ruta);
-    if (n < 0 || (size_t)n >= sizeof url) {
+    int n = snprintf(url, tam, "http://%s:%d%s", red->host, RED_PUERTO_HTTP, ruta);
+    if (n < 0 || (size_t)n >= tam) {
         fprintf(stderr, "Error: la URL es demasiado larga\n");
         return -1;
     }
+    return 0;
+}
 
-    OPCION(red->curl, CURLOPT_URL, url);
-    OPCION(red->curl, CURLOPT_HTTPGET, 1L);
-    OPCION(red->curl, CURLOPT_WRITEDATA, resp);
-    OPCION(red->curl, CURLOPT_ERRORBUFFER, err);
+/* Ejecuta la peticion ya configurada y revisa los dos niveles de error:
+ * primero el CURLcode (hubo conexion?) y luego se lee el codigo HTTP. */
+static int ejecutar(Red *red, const char *metodo, const char *ruta, Respuesta *resp)
+{
+    red->error[0] = '\0';
 
-    /* Nivel 1 de error: la conexion en si (CURLcode). */
     CURLcode rc = curl_easy_perform(red->curl);
     if (rc != CURLE_OK) {
-        fprintf(stderr, "Error de red en GET %s: %s\n", ruta,
-                err[0] ? err : curl_easy_strerror(rc));
+        fprintf(stderr, "Error de red en %s %s: %s\n", metodo, ruta,
+                red->error[0] ? red->error : curl_easy_strerror(rc));
         respuesta_liberar(resp);
         return -1;
     }
 
-    /* Nivel 2 de error: el codigo HTTP lo interpreta quien llama. */
     rc = curl_easy_getinfo(red->curl, CURLINFO_RESPONSE_CODE, &resp->codigo_http);
     if (rc != CURLE_OK) {
         fprintf(stderr, "Error leyendo el codigo HTTP: %s\n", curl_easy_strerror(rc));
@@ -151,15 +159,58 @@ int red_get(Red *red, const char *ruta, Respuesta *resp)
 
     if (resp->datos == NULL) {          /* respuesta sin cuerpo */
         resp->datos = calloc(1, 1);
-        if (resp->datos == NULL)
+        if (resp->datos == NULL) {
+            fprintf(stderr, "Error: sin memoria\n");
             return -1;
+        }
     }
     return 0;
 }
 
-void respuesta_liberar(Respuesta *resp)
+int red_get(Red *red, const char *ruta, Respuesta *resp)
 {
-    free(resp->datos);
-    resp->datos = NULL;
-    resp->largo = 0;
+    char url[256];
+
+    if (preparar(red, ruta, url, sizeof url, resp) != 0)
+        return -1;
+
+    OPCION(red->curl, CURLOPT_URL, url);
+    OPCION(red->curl, CURLOPT_HTTPGET, 1L);     /* vuelve a GET si antes fue POST */
+    OPCION(red->curl, CURLOPT_WRITEDATA, resp);
+    return ejecutar(red, "GET", ruta, resp);
+}
+
+/* Opciones propias del POST. Si algo falla, quien llama libera las cabeceras. */
+static int configurar_post(Red *red, const char *url, const char *json,
+                           struct curl_slist *cabeceras, Respuesta *resp)
+{
+    OPCION(red->curl, CURLOPT_URL, url);
+    OPCION(red->curl, CURLOPT_HTTPHEADER, cabeceras);
+    OPCION(red->curl, CURLOPT_POSTFIELDSIZE, (long)strlen(json));
+    OPCION(red->curl, CURLOPT_COPYPOSTFIELDS, json);    /* curl guarda su propia copia */
+    OPCION(red->curl, CURLOPT_WRITEDATA, resp);
+    return 0;
+}
+
+int red_post_json(Red *red, const char *ruta, const char *json, Respuesta *resp)
+{
+    char url[256];
+
+    if (preparar(red, ruta, url, sizeof url, resp) != 0)
+        return -1;
+
+    struct curl_slist *cabeceras = curl_slist_append(NULL, "Content-Type: application/json");
+    if (cabeceras == NULL) {
+        fprintf(stderr, "Error: sin memoria para las cabeceras\n");
+        return -1;
+    }
+
+    int resultado = configurar_post(red, url, json, cabeceras, resp);
+    if (resultado == 0)
+        resultado = ejecutar(red, "POST", ruta, resp);
+
+    /* El handle se reutiliza: se sueltan las cabeceras antes de liberarlas. */
+    (void)curl_easy_setopt(red->curl, CURLOPT_HTTPHEADER, NULL);
+    curl_slist_free_all(cabeceras);
+    return resultado;
 }

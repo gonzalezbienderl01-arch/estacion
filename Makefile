@@ -2,10 +2,11 @@
 # Uso: make | make run | make clean
 
 CC      = gcc
-CFLAGS  = -std=c11 -Wall -Wextra -O2
+# -MMD -MP: make recompila un .c cuando cambia alguno de los .h que usa
+CFLAGS  = -std=c11 -Wall -Wextra -O2 -MMD -MP
 LDLIBS  = -lcurl -lpthread -ldl -lm
 
-SRC     = src/main.c src/red.c src/datos.c src/comandos.c
+SRC     = src/main.c src/red.c src/datos.c src/comandos.c src/descarga.c
 OBJ     = $(patsubst src/%.c,build/%.o,$(SRC))
 SQLITE  = build/sqlite3.o
 
@@ -27,6 +28,8 @@ lib/sqlite/sqlite3.c:
 
 build:
 	mkdir -p build
+
+-include $(OBJ:.o=.d)
 
 run: all
 	./estacion config

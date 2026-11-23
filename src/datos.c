@@ -124,3 +124,92 @@ int datos_leer_config(sqlite3 *db, const char *clave, char *salida, size_t tam)
     sqlite3_finalize(st);
     return resultado;
 }
+
+int datos_preparar_insertar_lectura(sqlite3 *db, sqlite3_stmt **st)
+{
+    int rc = sqlite3_prepare_v2(db,
+        "INSERT OR IGNORE INTO lecturas_planta "
+        "(id, maquina, ts, temp, corriente, vibracion, estado) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?);",
+        -1, st, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "Error preparando INSERT lecturas: %s\n", sqlite3_errmsg(db));
+        return -1;
+    }
+    return 0;
+}
+
+void datos_finalizar(sqlite3_stmt *st)
+{
+    sqlite3_finalize(st);               /* con NULL no hace nada */
+}
+
+/* Los tres ayudantes de abajo ponen el valor, o NULL si el campo vino vacio. */
+static void enlazar_texto(sqlite3_stmt *st, int pos, const char *texto)
+{
+    if (texto != NULL)
+        sqlite3_bind_text(st, pos, texto, -1, SQLITE_STATIC);
+    else
+        sqlite3_bind_null(st, pos);
+}
+
+static void enlazar_entero(sqlite3_stmt *st, int pos, int hay, long long v)
+{
+    if (hay)
+        sqlite3_bind_int64(st, pos, v);
+    else
+        sqlite3_bind_null(st, pos);
+}
+
+static void enlazar_real(sqlite3_stmt *st, int pos, int hay, double v)
+{
+    if (hay)
+        sqlite3_bind_double(st, pos, v);
+    else
+        sqlite3_bind_null(st, pos);
+}
+
+int datos_insertar_lectura(sqlite3 *db, sqlite3_stmt *st, const Lectura *l)
+{
+    sqlite3_reset(st);
+    sqlite3_clear_bindings(st);
+
+    sqlite3_bind_int64(st, 1, l->id);
+    enlazar_texto(st, 2, l->maquina);
+    enlazar_entero(st, 3, l->tiene_ts, l->ts);
+    enlazar_real(st, 4, l->tiene_temp, l->temp);
+    enlazar_real(st, 5, l->tiene_corriente, l->corriente);
+    enlazar_real(st, 6, l->tiene_vibracion, l->vibracion);
+    enlazar_texto(st, 7, l->estado);
+
+    if (sqlite3_step(st) != SQLITE_DONE) {
+        fprintf(stderr, "Error insertando la lectura %lld: %s\n", l->id, sqlite3_errmsg(db));
+        return -1;
+    }
+
+    /* Si el PRIMARY KEY la rechazo por repetida, no cambio ninguna fila. */
+    return sqlite3_changes(db) > 0 ? 1 : 0;
+}
+
+int datos_resumen_lecturas(sqlite3 *db, long long *filas_unicas, long long *suma_ids)
+{
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(db,
+        "SELECT COUNT(*), COALESCE(SUM(id), 0) FROM lecturas_planta;",
+        -1, &st, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "Error preparando el resumen: %s\n", sqlite3_errmsg(db));
+        return -1;
+    }
+
+    rc = sqlite3_step(st);
+    if (rc == SQLITE_ROW) {
+        *filas_unicas = sqlite3_column_int64(st, 0);
+        *suma_ids = sqlite3_column_int64(st, 1);
+    } else {
+        fprintf(stderr, "Error calculando el resumen: %s\n", sqlite3_errmsg(db));
+    }
+
+    sqlite3_finalize(st);
+    return rc == SQLITE_ROW ? 0 : -1;
+}
