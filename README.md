@@ -118,7 +118,3 @@ El servidor falso también levanta un broker MQTT en el puerto 1883 y acepta est
 
 Para revisar la memoria: `valgrind --leak-check=full ./estacion descargar`.
 
-## Uso de IA
-
-Se usó un asistente de IA (Claude) como apoyo para estructurar, escribir y explicar el código.
-El autor revisó y comprende cada parte, y puede explicarla y modificarla en la defensa.
