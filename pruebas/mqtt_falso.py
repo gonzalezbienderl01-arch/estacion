@@ -58,6 +58,7 @@ class Broker:
         self.suscritos = {}                     # topico -> lista de conexiones
         self.retenidos = {}                     # topico -> contenido (mensaje retenido)
         self.candado = threading.Lock()
+        self.conexiones = set()                 # todas las conexiones abiertas
         estado.setdefault("latidos", [])
 
     # ---- publicar hacia los suscriptores ----
@@ -82,9 +83,20 @@ class Broker:
             cuerpo = len(topico.encode()).to_bytes(2, "big") + topico.encode() + contenido
             conexion.sendall(bytes([0x31]) + codificar_largo(len(cuerpo)) + cuerpo)
 
+    def cortar(self):
+        """Cierra todas las conexiones (para probar que el cliente reconecta)."""
+        with self.candado:
+            for conexion in list(self.conexiones):
+                try:
+                    conexion.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
     # ---- una conexion de cliente ----
     def atender(self, conexion):
         usuario = None
+        with self.candado:
+            self.conexiones.add(conexion)
         try:
             while True:
                 tipo, banderas, datos = leer_paquete(conexion)
@@ -104,6 +116,7 @@ class Broker:
             pass
         finally:
             with self.candado:
+                self.conexiones.discard(conexion)
                 for lista in self.suscritos.values():
                     if conexion in lista:
                         lista.remove(conexion)

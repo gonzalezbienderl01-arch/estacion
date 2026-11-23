@@ -84,4 +84,16 @@ int  datos_sumar_intento(sqlite3 *db, long long seq);
 int  datos_marcar_enviada(sqlite3 *db, long long seq);                    /* enviado = 1 */
 int  datos_contar_pendientes(sqlite3 *db, long long *cuantas);
 
+/* Tabla alarmas (Nivel 5). codigo es PRIMARY KEY: una alarma no se guarda dos veces. */
+#define ALARMA_CODIGO_MAX 16
+
+/* existe / confirmada son 0 o 1. Devuelve 0 si la consulta salio bien, -1 si hubo error. */
+int  datos_alarma_estado(sqlite3 *db, const char *codigo, int *existe, int *confirmada);
+int  datos_guardar_alarma(sqlite3 *db, const char *codigo, const char *maquina,
+                          long long ts_servidor, long long ts_recibida);
+int  datos_confirmar_alarma(sqlite3 *db, const char *codigo, long long ts_ack);
+/* Llena "codigos" con las alarmas recibidas y todavia sin confirmar (maximo "max").
+ * Devuelve cuantas hay o -1 si hay error. */
+int  datos_alarmas_sin_confirmar(sqlite3 *db, char codigos[][ALARMA_CODIGO_MAX], int max);
+
 #endif

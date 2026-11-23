@@ -8,6 +8,7 @@ Corre SOLO en tu computadora (127.0.0.1, puerto 4000). Simula:
   POST /api/v1/respuestas/descarga            (responde correcto=1 o correcto=0)
   POST /api/v1/respuestas/analisis            (campo por campo, maximo 10 intentos)
   POST /api/v1/telemetria                     (201 creada, 200 duplicada, 503 con Retry-After)
+  POST /api/v1/alarmas/ack                    (200 latencia_ms=N, 404 no existe, 409 ya confirmada)
   GET  /api/v1/mi-progreso                    (resumen de lo que ha recibido el servidor)
   Broker MQTT en 127.0.0.1:1883               (recibe tus latidos)
 
@@ -15,6 +16,7 @@ Uso (en una terminal):
     python3 pruebas/servidor_falso.py
     python3 pruebas/servidor_falso.py --429-una-vez     # responde 429 la primera vez
     python3 pruebas/servidor_falso.py --intervalo=1 --latido=3   # va mas rapido para probar
+    python3 pruebas/servidor_falso.py --alarmas=10               # una alarma MQTT cada 10 s
     python3 pruebas/servidor_falso.py --caidas          # dos caidas 503 (seg 8-16 y 28-36 tras la 1a lectura)
 
 Uso (en otra terminal):
@@ -27,6 +29,7 @@ import json
 import math
 import random
 import sys
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -49,12 +52,15 @@ def argumento(nombre, defecto):
     return defecto
 
 
+ALARMAS_CADA_S = int(argumento("alarmas", "0"))          # 0 = no genera alarmas
+ACK_FALLA = int(argumento("ack-falla", "0"))             # los primeros N ack responden 503
+TOPICO_ALARMA = "itla/planta/20241302/alarma"
 INTERVALO_S = argumento("intervalo", "5")
 LATIDO_S = argumento("latido", "10")
 
 UMBRAL = 72.50
 MAX_INTENTOS = 10
-estado = {"ya_dio_429": False, "intentos": 0, "t0": None, "retry_hasta": 0.0,
+estado = {"alarmas": {}, "acks_fallidos": 0, "latencias": [], "ya_dio_429": False, "intentos": 0, "t0": None, "retry_hasta": 0.0,
           "telemetria": {}, "duplicadas": 0, "violaciones_503": 0, "tarde": 0, "peticiones_503": 0}
 
 
@@ -140,7 +146,10 @@ class Manejador(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         print("GET", self.path, "| UA:", self.headers.get("User-Agent"), flush=True)
 
-        if url.path == "/api/v1/ping":
+        if url.path == "/admin/cortar-mqtt":        # solo para pruebas: tumba las conexiones MQTT
+            estado["broker"].cortar()
+            self.responder(200, "cortadas\n")
+        elif url.path == "/api/v1/ping":
             self.responder(200, "ok=1\nhora=1763740800\nip_publica=127.0.0.1\n")
         elif not self.autorizado():
             return
@@ -181,6 +190,9 @@ class Manejador(BaseHTTPRequestHandler):
             return
         if self.path == "/api/v1/telemetria":
             self.telemetria(cuerpo)
+            return
+        if self.path == "/api/v1/alarmas/ack":
+            self.ack(cuerpo)
             return
         if self.path == "/api/v1/respuestas/analisis":
             self.analisis(cuerpo)
@@ -230,6 +242,28 @@ class Manejador(BaseHTTPRequestHandler):
         else:
             self.responder(201, "estado=creada\n")
 
+    def ack(self, cuerpo):
+        try:
+            codigo = json.loads(cuerpo)["codigo"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            self.responder(400, "json invalido\n")
+            return
+        if estado["acks_fallidos"] < ACK_FALLA:
+            estado["acks_fallidos"] += 1
+            self.responder(503, "intenta de nuevo\n", extra={"Retry-After": "1"})
+            return
+        alarma = estado["alarmas"].get(codigo)
+        if alarma is None:
+            self.responder(404, "no existe\n")
+        elif alarma["ack"] is not None:
+            self.responder(409, "ya confirmada\n")
+        else:
+            alarma["ack"] = time.time()
+            latencia = int((alarma["ack"] - alarma["publicada"]) * 1000)
+            estado["latencias"].append(latencia)
+            estado["broker"].publicar(TOPICO_ALARMA, ("NINGUNA;%d\n" % int(time.time())).encode(), retener=True)
+            self.responder(200, "latencia_ms=%d\n" % latencia)
+
     def progreso(self):
         seqs = sorted(estado["telemetria"])
         completitud = len(seqs) / (seqs[-1] - seqs[0] + 1) if seqs else 0.0
@@ -241,7 +275,10 @@ class Manejador(BaseHTTPRequestHandler):
                   "recuperadas_tarde=%d" % estado["tarde"],
                   "peticiones_503=%d" % estado["peticiones_503"],
                   "violaciones_retry_after=%d" % estado["violaciones_503"],
-                  "latidos=%d" % len(estado.get("latidos", []))]
+                  "latidos=%d" % len(estado.get("latidos", [])),
+                  "alarmas_enviadas=%d" % len(estado["alarmas"]),
+                  "alarmas_confirmadas=%d" % sum(1 for a in estado["alarmas"].values() if a["ack"]),
+                  "latencias_ms=%s" % ",".join(str(x) for x in estado["latencias"])]
         self.responder(200, "\n".join(lineas) + "\n")
 
     def analisis(self, cuerpo):
@@ -269,7 +306,22 @@ class Manejador(BaseHTTPRequestHandler):
         pass
 
 
+def generar_alarmas(broker, cada):
+    """Publica una alarma retenida cada "cada" segundos; el broker la guarda hasta que se confirme."""
+    time.sleep(3)
+    while True:
+        codigo = "%04X" % random.randrange(0x10000)
+        ts = int(time.time())
+        estado["alarmas"][codigo] = {"publicada": time.time(), "ack": None}
+        broker.publicar(TOPICO_ALARMA, ("ALARMA;%s;M%d;%d\n" % (codigo, random.randint(1, 4), ts)).encode(),
+                        retener=True)
+        print("Alarma publicada:", codigo, flush=True)
+        time.sleep(cada)
+
+
 if __name__ == "__main__":
-    mqtt_falso.iniciar("20241302", TOKEN_PRUEBA, estado)
+    estado["broker"] = mqtt_falso.iniciar("20241302", TOKEN_PRUEBA, estado)
+    if ALARMAS_CADA_S > 0:
+        threading.Thread(target=generar_alarmas, args=(estado["broker"], ALARMAS_CADA_S), daemon=True).start()
     print("Servidor falso en http://127.0.0.1:4000 y MQTT en 127.0.0.1:1883 (Ctrl+C para salir)", flush=True)
     HTTPServer(("127.0.0.1", 4000), Manejador).serve_forever()

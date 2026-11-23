@@ -127,6 +127,10 @@ int red_iniciar(Red *red)
 
 void red_cerrar(Red *red)
 {
+    if (red->suscripcion != NULL) {
+        curl_easy_cleanup(red->suscripcion);
+        red->suscripcion = NULL;
+    }
     if (red->mqtt != NULL) {
         curl_easy_cleanup(red->mqtt);
         red->mqtt = NULL;
@@ -264,6 +268,65 @@ int red_mqtt_publicar(Red *red, const char *topico, const char *texto)
     CURLcode rc = curl_easy_perform(red->mqtt);
     if (rc != CURLE_OK) {
         fprintf(stderr, "Error MQTT publicando en %s: %s\n", topico,
+                red->error[0] ? red->error : curl_easy_strerror(rc));
+        return -1;
+    }
+    return 0;
+}
+
+/* El handle de la suscripcion se crea la primera vez que se usa. */
+static int configurar_suscripcion(Red *red)
+{
+    if (red->suscripcion != NULL)
+        return 0;
+
+    red->suscripcion = curl_easy_init();
+    if (red->suscripcion == NULL) {
+        fprintf(stderr, "Error: no se pudo crear el handle de la suscripcion\n");
+        return -1;
+    }
+
+    CURL *h = red->suscripcion;
+    OPCION(h, CURLOPT_USERNAME, red->matricula);
+    OPCION(h, CURLOPT_PASSWORD, red->token);
+    OPCION(h, CURLOPT_CONNECTTIMEOUT, 3L);
+    /* Sin CURLOPT_TIMEOUT: la suscripcion debe quedarse abierta todo el tiempo que pueda. */
+    OPCION(h, CURLOPT_NOSIGNAL, 1L);
+    OPCION(h, CURLOPT_NOPROGRESS, 0L);                  /* activa el callback de progreso */
+    OPCION(h, CURLOPT_TCP_KEEPALIVE, 1L);               /* detecta una conexion muerta */
+    OPCION(h, CURLOPT_TCP_KEEPIDLE, 30L);
+    OPCION(h, CURLOPT_TCP_KEEPINTVL, 10L);
+    OPCION(h, CURLOPT_ERRORBUFFER, red->error);
+    return 0;
+}
+
+int red_mqtt_suscribir(Red *red, const char *topico,
+                       curl_write_callback escribir, void *dato_escribir,
+                       curl_xferinfo_callback progreso, void *dato_progreso)
+{
+    char url[256];
+    int n = snprintf(url, sizeof url, "mqtt://%s:%d/%s", red->host, RED_PUERTO_MQTT, topico);
+
+    if (n < 0 || (size_t)n >= sizeof url) {
+        fprintf(stderr, "Error: la URL MQTT es demasiado larga\n");
+        return -1;
+    }
+    if (configurar_suscripcion(red) != 0)
+        return -1;
+
+    CURL *h = red->suscripcion;
+    OPCION(h, CURLOPT_URL, url);                        /* sin POSTFIELDS: eso es suscribirse */
+    OPCION(h, CURLOPT_WRITEFUNCTION, escribir);
+    OPCION(h, CURLOPT_WRITEDATA, dato_escribir);
+    OPCION(h, CURLOPT_XFERINFOFUNCTION, progreso);
+    OPCION(h, CURLOPT_XFERINFODATA, dato_progreso);
+
+    red->error[0] = '\0';
+    CURLcode rc = curl_easy_perform(h);
+    if (rc == CURLE_ABORTED_BY_CALLBACK)
+        return 0;                                       /* nos pidieron terminar: no es un error */
+    if (rc != CURLE_OK) {
+        fprintf(stderr, "Suscripcion MQTT cortada: %s\n",
                 red->error[0] ? red->error : curl_easy_strerror(rc));
         return -1;
     }

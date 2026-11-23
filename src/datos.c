@@ -386,3 +386,78 @@ int datos_contar_pendientes(sqlite3 *db, long long *cuantas)
     sqlite3_finalize(st);
     return rc == SQLITE_ROW ? 0 : -1;
 }
+
+/* ---------- Alarmas (Nivel 5) ---------- */
+
+int datos_alarma_estado(sqlite3 *db, const char *codigo, int *existe, int *confirmada)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, "SELECT ts_ack IS NOT NULL FROM alarmas WHERE codigo = ?;",
+                           -1, &st, NULL) != SQLITE_OK) {
+        fprintf(stderr, "Error preparando SELECT alarma: %s\n", sqlite3_errmsg(db));
+        return -1;
+    }
+    sqlite3_bind_text(st, 1, codigo, -1, SQLITE_STATIC);
+
+    int rc = sqlite3_step(st);
+    *existe = (rc == SQLITE_ROW);
+    *confirmada = (rc == SQLITE_ROW) ? sqlite3_column_int(st, 0) : 0;
+    if (rc != SQLITE_ROW && rc != SQLITE_DONE)
+        fprintf(stderr, "Error leyendo la alarma %s: %s\n", codigo, sqlite3_errmsg(db));
+    sqlite3_finalize(st);
+    return (rc == SQLITE_ROW || rc == SQLITE_DONE) ? 0 : -1;
+}
+
+int datos_guardar_alarma(sqlite3 *db, const char *codigo, const char *maquina,
+                         long long ts_servidor, long long ts_recibida)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR IGNORE INTO alarmas (codigo, maquina, ts_servidor, ts_recibida) "
+            "VALUES (?, ?, ?, ?);", -1, &st, NULL) != SQLITE_OK) {
+        fprintf(stderr, "Error preparando INSERT alarma: %s\n", sqlite3_errmsg(db));
+        return -1;
+    }
+    sqlite3_bind_text(st, 1, codigo, -1, SQLITE_STATIC);
+    sqlite3_bind_text(st, 2, maquina, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(st, 3, ts_servidor);
+    sqlite3_bind_int64(st, 4, ts_recibida);
+    return paso_unico(db, st, "guardar alarma");
+}
+
+int datos_confirmar_alarma(sqlite3 *db, const char *codigo, long long ts_ack)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, "UPDATE alarmas SET ts_ack = ? WHERE codigo = ?;",
+                           -1, &st, NULL) != SQLITE_OK) {
+        fprintf(stderr, "Error preparando UPDATE alarma: %s\n", sqlite3_errmsg(db));
+        return -1;
+    }
+    sqlite3_bind_int64(st, 1, ts_ack);
+    sqlite3_bind_text(st, 2, codigo, -1, SQLITE_STATIC);
+    return paso_unico(db, st, "confirmar alarma");
+}
+
+int datos_alarmas_sin_confirmar(sqlite3 *db, char codigos[][ALARMA_CODIGO_MAX], int max)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT codigo FROM alarmas WHERE ts_ack IS NULL ORDER BY ts_recibida LIMIT ?;",
+            -1, &st, NULL) != SQLITE_OK) {
+        fprintf(stderr, "Error preparando SELECT sin confirmar: %s\n", sqlite3_errmsg(db));
+        return -1;
+    }
+    sqlite3_bind_int(st, 1, max);
+
+    int n = 0, rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW && n < max) {
+        snprintf(codigos[n], ALARMA_CODIGO_MAX, "%s", (const char *)sqlite3_column_text(st, 0));
+        n++;
+    }
+    if (rc != SQLITE_ROW && rc != SQLITE_DONE) {
+        fprintf(stderr, "Error leyendo alarmas sin confirmar: %s\n", sqlite3_errmsg(db));
+        n = -1;
+    }
+    sqlite3_finalize(st);
+    return n;
+}

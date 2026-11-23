@@ -12,7 +12,8 @@
 /* Conexion con el servidor: un solo easy handle que se reutiliza. */
 typedef struct {
     CURL *curl;                     /* HTTP: un solo handle reutilizado */
-    CURL *mqtt;                     /* MQTT: otro handle, tambien reutilizado */
+    CURL *mqtt;                     /* MQTT (publicar): otro handle, tambien reutilizado */
+    CURL *suscripcion;              /* MQTT (escuchar): propio, para no mezclarlo con nada */
     char  host[128];
     char  token[128];
     char  matricula[32];
@@ -44,6 +45,14 @@ void respuesta_liberar(Respuesta *resp);
 /* Publica un mensaje MQTT (QoS 0) con libcurl: usuario = matricula, clave = token.
  * Devuelve 0 si se envio, -1 si el broker no respondio. El texto ya debe traer su '\n'. */
 int  red_mqtt_publicar(Red *red, const char *topico, const char *texto);
+
+/* Se suscribe a un topico MQTT con libcurl. curl_easy_perform no regresa mientras la
+ * conexion siga viva: cada mensaje llega al callback "escribir" y "progreso" se llama
+ * a cada rato (si devuelve 1, la suscripcion termina; sirve para Ctrl+C).
+ * Devuelve 0 si la suscripcion termino sin error y -1 si se corto o no pudo conectar. */
+int  red_mqtt_suscribir(Red *red, const char *topico,
+                        curl_write_callback escribir, void *dato_escribir,
+                        curl_xferinfo_callback progreso, void *dato_progreso);
 
 /* Devuelve 1 si el codigo HTTP fue 200; si no, explica el motivo en stderr y devuelve 0.
  * "que" dice de que ruta se trata, para que el mensaje sea claro. */

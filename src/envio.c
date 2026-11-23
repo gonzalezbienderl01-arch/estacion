@@ -1,16 +1,16 @@
-#define _POSIX_C_SOURCE 200809L         /* sigaction, clock_gettime y nanosleep con -std=c11 */
+#define _POSIX_C_SOURCE 200809L         /* clock_gettime y nanosleep con -std=c11 */
 
 #include "envio.h"
 
 #include <errno.h>
 #include <limits.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
 #include "comandos.h"
+#include "senal.h"
 #include "sensor.h"
 
 #define INTERVALO_DEFECTO_S     5
@@ -21,15 +21,6 @@
 #define ESPERA_RED_MAX_S        30      /* los reintentos por fallo de red: 1, 2, 4... hasta 30 s */
 #define SIN_ENVIO               LLONG_MAX   /* la cola esta vacia: nada que enviar por ahora */
 #define MAX_SUEO_MS             200     /* para revisar Ctrl+C a menudo */
-
-/* Lo marca el manejador de señales; el bucle principal lo revisa. */
-static volatile sig_atomic_t salir = 0;
-
-static void al_recibir_senal(int senal)
-{
-    (void)senal;
-    salir = 1;
-}
 
 /* Todo lo que el bucle necesita recordar entre vueltas. Los tiempos van en milisegundos
  * del reloj monotonico (no se ve afectado si alguien cambia la hora del sistema). */
@@ -58,17 +49,6 @@ static void dormir_ms(long long ms)
         return;
     struct timespec t = { (time_t)(ms / 1000), (long)(ms % 1000) * 1000000L };
     nanosleep(&t, NULL);                /* un Ctrl+C la interrumpe y salimos rapido */
-}
-
-static void instalar_senales(void)
-{
-    struct sigaction sa;
-
-    memset(&sa, 0, sizeof sa);
-    sa.sa_handler = al_recibir_senal;   /* sin SA_RESTART: asi nanosleep se interrumpe */
-    sigemptyset(&sa.sa_mask);
-    sigaction(SIGINT, &sa, NULL);
-    sigaction(SIGTERM, &sa, NULL);
 }
 
 /* ---------- Configuracion ---------- */
@@ -268,11 +248,11 @@ int cmd_enviar(Red *red, sqlite3 *db)
     e.t_latido = ahora;
     e.t_envio = ahora;                  /* primero se vacian las pendientes de una corrida anterior */
 
-    instalar_senales();
+    senal_instalar();
     printf("Enviando una lectura cada %ld s y un latido cada %ld s. Ctrl+C para terminar.\n",
            e.intervalo_ms / 1000, e.latido_ms / 1000);
 
-    while (!salir && !e.fatal) {
+    while (!senal_pedida() && !e.fatal) {
         ahora = ahora_ms();
         if (ahora >= e.t_lectura) {
             if (generar_lectura(db, &e) != 0) {
@@ -288,7 +268,7 @@ int cmd_enviar(Red *red, sqlite3 *db)
             e.t_latido = siguiente_plazo(e.t_latido, e.latido_ms, ahora_ms());
         }
 
-        if (ahora_ms() >= e.t_envio && !salir)
+        if (ahora_ms() >= e.t_envio && !senal_pedida())
             enviar_uno(red, db, &e);
 
         esperar_proximo_plazo(&e);
