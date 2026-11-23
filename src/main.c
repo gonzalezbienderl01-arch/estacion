@@ -5,6 +5,7 @@
 #include "comandos.h"
 #include "datos.h"
 #include "descarga.h"
+#include "envio.h"
 #include "red.h"
 
 typedef int (*Comando)(Red *red, sqlite3 *db);
@@ -20,9 +21,10 @@ static const Subcomando SUBCOMANDOS[] = {
     { "config",    "Nivel 0: leer la configuracion del servidor", cmd_config },
     { "descargar", "Nivel 1: bajar las lecturas de planta",       cmd_descargar },
     { "analizar",  "Nivel 2: estadisticas por maquina con SQL",    cmd_analizar },
+    { "enviar",    "Niveles 3 y 4: telemetria resiliente y latido", cmd_enviar },
 };
 
-static const char *PENDIENTES[] = { "enviar", "escuchar" };
+static const char *PENDIENTES[] = { "escuchar" };
 
 #define CANTIDAD(a) (sizeof(a) / sizeof((a)[0]))
 
@@ -31,7 +33,7 @@ static void uso(const char *prog)
     fprintf(stderr, "Uso: %s <subcomando>\n", prog);
     for (size_t i = 0; i < CANTIDAD(SUBCOMANDOS); i++)
         fprintf(stderr, "  %-10s %s\n", SUBCOMANDOS[i].nombre, SUBCOMANDOS[i].ayuda);
-    fprintf(stderr, "  (pendientes: enviar, escuchar)\n"
+    fprintf(stderr, "  (pendiente: escuchar)\n"
                     "\nVariables de entorno: ITLA_HOST, ITLA_MATRICULA, ITLA_TOKEN\n");
 }
 

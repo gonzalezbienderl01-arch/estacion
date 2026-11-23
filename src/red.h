@@ -7,10 +7,12 @@
 #define RED_USER_AGENT   "estacion-itla/1.0"
 #define RED_PUERTO_HTTP  4000
 #define RED_MAX_CUERPO   (1024 * 1024)
+#define RED_PUERTO_MQTT  1883
 
 /* Conexion con el servidor: un solo easy handle que se reutiliza. */
 typedef struct {
-    CURL *curl;
+    CURL *curl;                     /* HTTP: un solo handle reutilizado */
+    CURL *mqtt;                     /* MQTT: otro handle, tambien reutilizado */
     char  host[128];
     char  token[128];
     char  matricula[32];
@@ -22,6 +24,7 @@ typedef struct {
     char *datos;        /* cuerpo, siempre terminado en '\0' si la funcion devuelve 0 */
     size_t largo;
     long  codigo_http;
+    long  retry_after;  /* segundos que pidio esperar el servidor (503); 0 si no vino */
 } Respuesta;
 
 /* Lee ITLA_HOST, ITLA_MATRICULA e ITLA_TOKEN del entorno y prepara el handle.
@@ -37,6 +40,10 @@ int  red_get(Red *red, const char *ruta, Respuesta *resp);
 int  red_post_json(Red *red, const char *ruta, const char *json, Respuesta *resp);
 
 void respuesta_liberar(Respuesta *resp);
+
+/* Publica un mensaje MQTT (QoS 0) con libcurl: usuario = matricula, clave = token.
+ * Devuelve 0 si se envio, -1 si el broker no respondio. El texto ya debe traer su '\n'. */
+int  red_mqtt_publicar(Red *red, const char *topico, const char *texto);
 
 /* Devuelve 1 si el codigo HTTP fue 200; si no, explica el motivo en stderr y devuelve 0.
  * "que" dice de que ruta se trata, para que el mensaje sea claro. */

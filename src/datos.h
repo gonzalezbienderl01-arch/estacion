@@ -67,4 +67,21 @@ typedef struct {
  * (0 o mas) o -1 si hay error. */
 int  datos_analizar(sqlite3 *db, double umbral, Analisis *salida, int max);
 
+/* Una fila de la cola de telemetria. */
+typedef struct {
+    long long seq;
+    long long ts;
+    double    temp;
+    double    corriente;
+} Telemetria;
+
+/* El numero de secuencia vive en SQLite: sobrevive a un reinicio del programa. */
+int  datos_siguiente_seq(sqlite3 *db, long long *seq);
+int  datos_guardar_telemetria(sqlite3 *db, const Telemetria *t);          /* enviado = 0 */
+/* Busca la pendiente mas vieja (menor seq). Devuelve 1 si hay, 0 si no hay, -1 si error. */
+int  datos_telemetria_pendiente(sqlite3 *db, Telemetria *t);
+int  datos_sumar_intento(sqlite3 *db, long long seq);
+int  datos_marcar_enviada(sqlite3 *db, long long seq);                    /* enviado = 1 */
+int  datos_contar_pendientes(sqlite3 *db, long long *cuantas);
+
 #endif

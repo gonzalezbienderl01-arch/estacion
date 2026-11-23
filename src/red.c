@@ -69,6 +69,20 @@ static int configurar_handle(Red *red)
     return 0;
 }
 
+/* Opciones del handle MQTT. La URL y el mensaje se ponen en cada publicacion. */
+static int configurar_mqtt(Red *red)
+{
+    CURL *h = red->mqtt;
+
+    OPCION(h, CURLOPT_USERNAME, red->matricula);
+    OPCION(h, CURLOPT_PASSWORD, red->token);
+    OPCION(h, CURLOPT_CONNECTTIMEOUT, 2L);
+    OPCION(h, CURLOPT_TIMEOUT, 3L);     /* un latido perdido no debe frenar el bucle */
+    OPCION(h, CURLOPT_NOSIGNAL, 1L);
+    OPCION(h, CURLOPT_ERRORBUFFER, red->error);
+    return 0;
+}
+
 int red_iniciar(Red *red)
 {
     memset(red, 0, sizeof *red);
@@ -97,7 +111,14 @@ int red_iniciar(Red *red)
         return -1;
     }
 
-    if (configurar_handle(red) != 0) {
+    red->mqtt = curl_easy_init();
+    if (red->mqtt == NULL) {
+        fprintf(stderr, "Error: no se pudo crear el handle MQTT\n");
+        red_cerrar(red);
+        return -1;
+    }
+
+    if (configurar_handle(red) != 0 || configurar_mqtt(red) != 0) {
         red_cerrar(red);
         return -1;
     }
@@ -106,6 +127,10 @@ int red_iniciar(Red *red)
 
 void red_cerrar(Red *red)
 {
+    if (red->mqtt != NULL) {
+        curl_easy_cleanup(red->mqtt);
+        red->mqtt = NULL;
+    }
     if (red->curl != NULL) {
         curl_easy_cleanup(red->curl);
         red->curl = NULL;
@@ -127,6 +152,7 @@ static int preparar(const Red *red, const char *ruta, char *url, size_t tam,
     resp->datos = NULL;
     resp->largo = 0;
     resp->codigo_http = 0;
+    resp->retry_after = 0;
 
     int n = snprintf(url, tam, "http://%s:%d%s", red->host, RED_PUERTO_HTTP, ruta);
     if (n < 0 || (size_t)n >= tam) {
@@ -156,6 +182,11 @@ static int ejecutar(Red *red, const char *metodo, const char *ruta, Respuesta *r
         respuesta_liberar(resp);
         return -1;
     }
+
+    /* Retry-After (503): libcurl ya lo interpreta; si no vino, queda en 0. */
+    curl_off_t espera = 0;
+    if (curl_easy_getinfo(red->curl, CURLINFO_RETRY_AFTER, &espera) == CURLE_OK && espera > 0)
+        resp->retry_after = (long)espera;
 
     if (resp->datos == NULL) {          /* respuesta sin cuerpo */
         resp->datos = calloc(1, 1);
@@ -213,6 +244,30 @@ int red_post_json(Red *red, const char *ruta, const char *json, Respuesta *resp)
     (void)curl_easy_setopt(red->curl, CURLOPT_HTTPHEADER, NULL);
     curl_slist_free_all(cabeceras);
     return resultado;
+}
+
+int red_mqtt_publicar(Red *red, const char *topico, const char *texto)
+{
+    char url[256];
+    int n = snprintf(url, sizeof url, "mqtt://%s:%d/%s", red->host, RED_PUERTO_MQTT, topico);
+
+    if (n < 0 || (size_t)n >= sizeof url) {
+        fprintf(stderr, "Error: la URL MQTT es demasiado larga\n");
+        return -1;
+    }
+
+    OPCION(red->mqtt, CURLOPT_URL, url);
+    OPCION(red->mqtt, CURLOPT_POSTFIELDSIZE, (long)strlen(texto));
+    OPCION(red->mqtt, CURLOPT_COPYPOSTFIELDS, texto);
+
+    red->error[0] = '\0';
+    CURLcode rc = curl_easy_perform(red->mqtt);
+    if (rc != CURLE_OK) {
+        fprintf(stderr, "Error MQTT publicando en %s: %s\n", topico,
+                red->error[0] ? red->error : curl_easy_strerror(rc));
+        return -1;
+    }
+    return 0;
 }
 
 int respuesta_ok(const Respuesta *resp, const char *que)

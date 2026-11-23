@@ -18,7 +18,7 @@ Requisitos: `gcc`, `make`, `libcurl` (con cabeceras) y la amalgamation de SQLite
     ./estacion config      # Nivel 0 (hecho)
     ./estacion descargar   # Nivel 1 (hecho)
     ./estacion analizar    # Nivel 2 (hecho)
-    ./estacion enviar      # Niveles 3 y 4 (pendiente)
+    ./estacion enviar      # Niveles 3 y 4 (hecho)
     ./estacion escuchar    # Nivel 5 (pendiente)
 
 ## Estructura
@@ -27,6 +27,8 @@ Requisitos: `gcc`, `make`, `libcurl` (con cabeceras) y la amalgamation de SQLite
 - `src/comandos.c`: Nivel 0 (`config`).
 - `src/descarga.c`: Nivel 1 (`descargar`).
 - `src/analisis.c`: Nivel 2 (`analizar`).
+- `src/envio.c`: Niveles 3 y 4 (`enviar`): bucle con cola de telemetria y latido MQTT.
+- `src/sensor.c`: sensor simulado (temperatura 25-45 C, corriente 2-5 A).
 - `src/red.c`: todo lo de libcurl (un solo easy handle reutilizado, GET y POST).
 - `src/datos.c`: todo lo de SQLite (sentencias preparadas).
 - `pruebas/servidor_falso.py`: servidor de práctica que corre solo en tu PC.
@@ -57,6 +59,22 @@ Requisitos: `gcc`, `make`, `libcurl` (con cabeceras) y la amalgamation de SQLite
 - **Errores HTTP compartidos:** `respuesta_ok()` en `red.c` traduce 200/400/401/403/429 a mensajes
   claros y la usan `descargar` y `analizar`.
 
+- **Telemetría resiliente (Nivel 3):** cada lectura se guarda primero en la tabla `telemetria`
+  (`enviado = 0`) y después se intenta enviar. Solo se marca `enviado = 1` cuando el servidor
+  responde 201 (creada) o 200 (duplicada). El `seq` sale de `MAX(seq) + 1` en SQLite, así que
+  sobrevive a un reinicio y las pendientes de una corrida anterior se envían primero y en orden.
+- **Un solo bucle, sin hilos:** el bucle lleva tres plazos (próxima lectura, próximo latido, próximo
+  envío) con el reloj monotónico y duerme hasta el más cercano. Cada vuelta envía **una** lectura
+  pendiente, así una cola larga no atrasa las lecturas ni los latidos.
+- **503 y red caída:** con 503 se espera `Retry-After` (leído con `CURLINFO_RETRY_AFTER`) más 500 ms
+  sin hacer peticiones, mientras las lecturas siguen guardándose. Si no hay conexión se espera
+  1, 2, 4... hasta 30 s. Entre envíos de la cola hay 250 ms para no recibir 429.
+- **Latido (Nivel 4):** `LATIDO;<seq>;<pendientes>;<ts>` por MQTT (QoS 0) con libcurl, usando un
+  segundo easy handle (`mqtt://`, usuario = matrícula, clave = token). Si el broker no responde,
+  el latido se pierde y no se reintenta, como pide el reto.
+- **Ctrl+C:** un manejador de señales solo levanta una bandera; el bucle termina limpio y muestra
+  cuántas lecturas quedaron pendientes.
+
 ## Pruebas sin el servidor real
 
 En una terminal:
@@ -71,6 +89,13 @@ En otra:
     ./estacion config
     ./estacion descargar
     ./estacion analizar
+    ./estacion enviar      # Ctrl+C para terminar
+
+El servidor falso también levanta un broker MQTT en el puerto 1883 y acepta estas opciones:
+
+    python3 pruebas/servidor_falso.py --caidas                    # dos caidas 503 con Retry-After
+    python3 pruebas/servidor_falso.py --intervalo=1 --latido=3    # prueba mas rapida
+    curl -s -H "Authorization: Bearer $ITLA_TOKEN" http://127.0.0.1:4000/api/v1/mi-progreso
 
 Para revisar la memoria: `valgrind --leak-check=full ./estacion descargar`.
 

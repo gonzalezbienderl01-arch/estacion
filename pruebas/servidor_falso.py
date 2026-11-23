@@ -7,10 +7,15 @@ Corre SOLO en tu computadora (127.0.0.1, puerto 4000). Simula:
   GET  /api/v1/lecturas?desde_id=N&limite=M   (2000 filas, con repetidas y campos vacios)
   POST /api/v1/respuestas/descarga            (responde correcto=1 o correcto=0)
   POST /api/v1/respuestas/analisis            (campo por campo, maximo 10 intentos)
+  POST /api/v1/telemetria                     (201 creada, 200 duplicada, 503 con Retry-After)
+  GET  /api/v1/mi-progreso                    (resumen de lo que ha recibido el servidor)
+  Broker MQTT en 127.0.0.1:1883               (recibe tus latidos)
 
 Uso (en una terminal):
     python3 pruebas/servidor_falso.py
     python3 pruebas/servidor_falso.py --429-una-vez     # responde 429 la primera vez
+    python3 pruebas/servidor_falso.py --intervalo=1 --latido=3   # va mas rapido para probar
+    python3 pruebas/servidor_falso.py --caidas          # dos caidas 503 (seg 8-16 y 28-36 tras la 1a lectura)
 
 Uso (en otra terminal):
     export ITLA_HOST=127.0.0.1
@@ -19,19 +24,38 @@ Uso (en otra terminal):
     ./estacion descargar
 """
 import json
+import math
 import random
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
+
+import mqtt_falso
 
 TOKEN_PRUEBA = "abcdefghijklmnopqrstuvwxyz012345"   # 32 caracteres
 TOTAL = 2000
 REPETIDAS_POR_PAGINA = 3
 RESPONDER_429_UNA_VEZ = "--429-una-vez" in sys.argv
+CAIDAS = "--caidas" in sys.argv
+VENTANAS_503 = [(8, 16), (28, 36)]      # segundos desde la primera lectura recibida
+
+
+def argumento(nombre, defecto):
+    """Lee --nombre=valor de la linea de comandos (para acelerar las pruebas)."""
+    for a in sys.argv:
+        if a.startswith("--%s=" % nombre):
+            return a.split("=", 1)[1]
+    return defecto
+
+
+INTERVALO_S = argumento("intervalo", "5")
+LATIDO_S = argumento("latido", "10")
 
 UMBRAL = 72.50
 MAX_INTENTOS = 10
-estado = {"ya_dio_429": False, "intentos": 0}
+estado = {"ya_dio_429": False, "intentos": 0, "t0": None, "retry_hasta": 0.0,
+          "telemetria": {}, "duplicadas": 0, "violaciones_503": 0, "tarde": 0, "peticiones_503": 0}
 
 
 def generar_filas():
@@ -96,10 +120,12 @@ def pagina(desde_id, limite):
 
 
 class Manejador(BaseHTTPRequestHandler):
-    def responder(self, codigo, texto, tipo="text/plain"):
+    def responder(self, codigo, texto, tipo="text/plain", extra=None):
         cuerpo = texto.encode()
         self.send_response(codigo)
         self.send_header("Content-Type", tipo)
+        for nombre, valor in (extra or {}).items():
+            self.send_header(nombre, valor)
         self.send_header("Content-Length", str(len(cuerpo)))
         self.end_headers()
         self.wfile.write(cuerpo)
@@ -120,7 +146,10 @@ class Manejador(BaseHTTPRequestHandler):
             return
         elif url.path == "/api/v1/config":
             self.responder(200, "matricula=20241302\nhora=1763740800\numbral_temp=72.50\n"
-                                "intervalo_s=5\nlatido_s=10\nmaquinas=M1,M2,M3,M4\nlote_max=200\n")
+                                "intervalo_s=%s\nlatido_s=%s\nmaquinas=M1,M2,M3,M4\nlote_max=200\n"
+                           % (INTERVALO_S, LATIDO_S))
+        elif url.path == "/api/v1/mi-progreso":
+            self.progreso()
         elif url.path == "/api/v1/lecturas":
             self.lecturas(parse_qs(url.query))
         else:
@@ -150,6 +179,9 @@ class Manejador(BaseHTTPRequestHandler):
         print("POST", self.path, cuerpo, "| tipo:", self.headers.get("Content-Type"), flush=True)
         if not self.autorizado():
             return
+        if self.path == "/api/v1/telemetria":
+            self.telemetria(cuerpo)
+            return
         if self.path == "/api/v1/respuestas/analisis":
             self.analisis(cuerpo)
             return
@@ -163,6 +195,54 @@ class Manejador(BaseHTTPRequestHandler):
             return
         ok = datos.get("filas_unicas") == TOTAL and datos.get("suma_ids") == SUMA_IDS
         self.responder(200, "correcto=%d\n" % (1 if ok else 0))
+
+    def telemetria(self, cuerpo):
+        ahora = time.time()
+        if estado["t0"] is None:
+            estado["t0"] = ahora
+        if ahora < estado["retry_hasta"]:
+            estado["violaciones_503"] += 1          # el cliente no respeto el Retry-After
+        relativo = ahora - estado["t0"]
+        if CAIDAS:
+            for inicio, fin in VENTANAS_503:
+                if inicio <= relativo < fin:
+                    espera = math.ceil(fin - relativo)
+                    estado["retry_hasta"] = ahora + espera
+                    estado["peticiones_503"] += 1
+                    self.responder(503, "servidor en mantenimiento\n", extra={"Retry-After": str(espera)})
+                    return
+        try:
+            lectura = json.loads(cuerpo)
+            seq, ts = int(lectura["seq"]), int(lectura["ts"])
+            float(lectura["temp"]), float(lectura["corriente"])
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            self.responder(400, "json invalido\n")
+            return
+        duplicada = seq in estado["telemetria"]
+        if duplicada:
+            estado["duplicadas"] += 1
+        else:
+            estado["telemetria"][seq] = ahora
+            if ahora - ts >= 30:
+                estado["tarde"] += 1                # lectura recuperada de la cola
+        if duplicada:
+            self.responder(200, "estado=duplicada\n")
+        else:
+            self.responder(201, "estado=creada\n")
+
+    def progreso(self):
+        seqs = sorted(estado["telemetria"])
+        completitud = len(seqs) / (seqs[-1] - seqs[0] + 1) if seqs else 0.0
+        lineas = ["telemetria_unicas=%d" % len(seqs),
+                  "seq_min=%d" % (seqs[0] if seqs else 0),
+                  "seq_max=%d" % (seqs[-1] if seqs else 0),
+                  "completitud=%.3f" % completitud,
+                  "duplicadas=%d" % estado["duplicadas"],
+                  "recuperadas_tarde=%d" % estado["tarde"],
+                  "peticiones_503=%d" % estado["peticiones_503"],
+                  "violaciones_retry_after=%d" % estado["violaciones_503"],
+                  "latidos=%d" % len(estado.get("latidos", []))]
+        self.responder(200, "\n".join(lineas) + "\n")
 
     def analisis(self, cuerpo):
         if estado["intentos"] >= MAX_INTENTOS:
@@ -190,5 +270,6 @@ class Manejador(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    print("Servidor falso en http://127.0.0.1:4000 (Ctrl+C para salir)", flush=True)
+    mqtt_falso.iniciar("20241302", TOKEN_PRUEBA, estado)
+    print("Servidor falso en http://127.0.0.1:4000 y MQTT en 127.0.0.1:1883 (Ctrl+C para salir)", flush=True)
     HTTPServer(("127.0.0.1", 4000), Manejador).serve_forever()

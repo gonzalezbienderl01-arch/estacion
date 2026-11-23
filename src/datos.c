@@ -271,3 +271,118 @@ int datos_analizar(sqlite3 *db, double umbral, Analisis *salida, int max)
     sqlite3_finalize(st);
     return n;
 }
+
+/* ---------- Cola de telemetria (Nivel 3) ---------- */
+
+/* Prepara una sentencia, ejecuta un solo paso y la finaliza. Para las que no devuelven filas. */
+static int paso_unico(sqlite3 *db, sqlite3_stmt *st, const char *que)
+{
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) {
+        fprintf(stderr, "Error SQL (%s): %s\n", que, sqlite3_errmsg(db));
+        return -1;
+    }
+    return 0;
+}
+
+int datos_siguiente_seq(sqlite3 *db, long long *seq)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, "SELECT COALESCE(MAX(seq), 0) + 1 FROM telemetria;",
+                           -1, &st, NULL) != SQLITE_OK) {
+        fprintf(stderr, "Error preparando seq: %s\n", sqlite3_errmsg(db));
+        return -1;
+    }
+    int rc = sqlite3_step(st);
+    if (rc == SQLITE_ROW)
+        *seq = sqlite3_column_int64(st, 0);
+    else
+        fprintf(stderr, "Error leyendo seq: %s\n", sqlite3_errmsg(db));
+    sqlite3_finalize(st);
+    return rc == SQLITE_ROW ? 0 : -1;
+}
+
+int datos_guardar_telemetria(sqlite3 *db, const Telemetria *t)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT INTO telemetria (seq, ts, temp, corriente, enviado, intentos) "
+            "VALUES (?, ?, ?, ?, 0, 0);", -1, &st, NULL) != SQLITE_OK) {
+        fprintf(stderr, "Error preparando INSERT telemetria: %s\n", sqlite3_errmsg(db));
+        return -1;
+    }
+    sqlite3_bind_int64(st, 1, t->seq);
+    sqlite3_bind_int64(st, 2, t->ts);
+    sqlite3_bind_double(st, 3, t->temp);
+    sqlite3_bind_double(st, 4, t->corriente);
+    return paso_unico(db, st, "guardar telemetria");
+}
+
+int datos_telemetria_pendiente(sqlite3 *db, Telemetria *t)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT seq, ts, temp, corriente FROM telemetria "
+            "WHERE enviado = 0 ORDER BY seq LIMIT 1;", -1, &st, NULL) != SQLITE_OK) {
+        fprintf(stderr, "Error preparando SELECT pendiente: %s\n", sqlite3_errmsg(db));
+        return -1;
+    }
+    int rc = sqlite3_step(st);
+    int resultado;
+    if (rc == SQLITE_ROW) {
+        t->seq = sqlite3_column_int64(st, 0);
+        t->ts = sqlite3_column_int64(st, 1);
+        t->temp = sqlite3_column_double(st, 2);
+        t->corriente = sqlite3_column_double(st, 3);
+        resultado = 1;
+    } else if (rc == SQLITE_DONE) {
+        resultado = 0;
+    } else {
+        fprintf(stderr, "Error leyendo pendiente: %s\n", sqlite3_errmsg(db));
+        resultado = -1;
+    }
+    sqlite3_finalize(st);
+    return resultado;
+}
+
+int datos_sumar_intento(sqlite3 *db, long long seq)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, "UPDATE telemetria SET intentos = intentos + 1 WHERE seq = ?;",
+                           -1, &st, NULL) != SQLITE_OK) {
+        fprintf(stderr, "Error preparando UPDATE intentos: %s\n", sqlite3_errmsg(db));
+        return -1;
+    }
+    sqlite3_bind_int64(st, 1, seq);
+    return paso_unico(db, st, "sumar intento");
+}
+
+int datos_marcar_enviada(sqlite3 *db, long long seq)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, "UPDATE telemetria SET enviado = 1 WHERE seq = ?;",
+                           -1, &st, NULL) != SQLITE_OK) {
+        fprintf(stderr, "Error preparando UPDATE enviado: %s\n", sqlite3_errmsg(db));
+        return -1;
+    }
+    sqlite3_bind_int64(st, 1, seq);
+    return paso_unico(db, st, "marcar enviada");
+}
+
+int datos_contar_pendientes(sqlite3 *db, long long *cuantas)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM telemetria WHERE enviado = 0;",
+                           -1, &st, NULL) != SQLITE_OK) {
+        fprintf(stderr, "Error preparando el conteo: %s\n", sqlite3_errmsg(db));
+        return -1;
+    }
+    int rc = sqlite3_step(st);
+    if (rc == SQLITE_ROW)
+        *cuantas = sqlite3_column_int64(st, 0);
+    else
+        fprintf(stderr, "Error contando pendientes: %s\n", sqlite3_errmsg(db));
+    sqlite3_finalize(st);
+    return rc == SQLITE_ROW ? 0 : -1;
+}

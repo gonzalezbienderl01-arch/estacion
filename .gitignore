@@ -5,3 +5,4 @@ estacion.db-wal
 estacion.db-shm
 *.o
 .env
+__pycache__/
