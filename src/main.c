@@ -1,3 +1,22 @@
+/**************************************************************************/
+/*  Programación para mecatrónicos                                        */
+/*  Nombre:    Bienderl Gonzalez                                          */
+/*  Matricula: 2024-1302                                                  */
+/*  Seccion:   Miercoles                                                  */
+/*  Practica:  Estacion de Telemetria ITLA                                */
+/*  Fecha:     23/11/2026                                                 */
+/*  Link Practica: https://github.com/gonzalezbienderl01-arch/estacion    */
+/**************************************************************************/
+
+/*********************/
+/*           Programación para mecatrónicos               */
+/*  Nombre:    Bienderl Gonzalez                          */
+/*  Matricula: 2024-1302                                  */
+/*  Seccion:   Miercoles                                  */
+/*  Practica:  Estacion de Telemetri                      */
+/*  Fecha:     23/11/2026                                 */                       
+/*  Link Practica: https://github.com/gonzalezbienderl01-arch/estacion */
+/*********************/
 #include <stdio.h>
 #include <string.h>
 

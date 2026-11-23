@@ -1,3 +1,13 @@
+/**************************************************************************/
+/*  Programación para mecatrónicos                                        */
+/*  Nombre:    Bienderl Gonzalez                                          */
+/*  Matricula: 2024-1302                                                  */
+/*  Seccion:   Miercoles                                                  */
+/*  Practica:  Estacion de Telemetria ITLA                                */
+/*  Fecha:     23/11/2026                                                 */
+/*  Link Practica: https://github.com/gonzalezbienderl01-arch/estacion    */
+/**************************************************************************/
+
 #define _POSIX_C_SOURCE 200809L         /* clock_gettime y nanosleep con -std=c11 */
 
 #include "escuchar.h"
