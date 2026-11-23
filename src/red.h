@@ -38,4 +38,8 @@ int  red_post_json(Red *red, const char *ruta, const char *json, Respuesta *resp
 
 void respuesta_liberar(Respuesta *resp);
 
+/* Devuelve 1 si el codigo HTTP fue 200; si no, explica el motivo en stderr y devuelve 0.
+ * "que" dice de que ruta se trata, para que el mensaje sea claro. */
+int  respuesta_ok(const Respuesta *resp, const char *que);
+
 #endif

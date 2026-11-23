@@ -6,6 +6,7 @@ Corre SOLO en tu computadora (127.0.0.1, puerto 4000). Simula:
   GET  /api/v1/config
   GET  /api/v1/lecturas?desde_id=N&limite=M   (2000 filas, con repetidas y campos vacios)
   POST /api/v1/respuestas/descarga            (responde correcto=1 o correcto=0)
+  POST /api/v1/respuestas/analisis            (campo por campo, maximo 10 intentos)
 
 Uso (en una terminal):
     python3 pruebas/servidor_falso.py
@@ -28,7 +29,9 @@ TOTAL = 2000
 REPETIDAS_POR_PAGINA = 3
 RESPONDER_429_UNA_VEZ = "--429-una-vez" in sys.argv
 
-estado = {"ya_dio_429": False}
+UMBRAL = 72.50
+MAX_INTENTOS = 10
+estado = {"ya_dio_429": False, "intentos": 0}
 
 
 def generar_filas():
@@ -55,6 +58,34 @@ def generar_filas():
 
 FILAS = generar_filas()
 SUMA_IDS = sum(range(1, TOTAL + 1))
+
+
+def estadisticas_esperadas():
+    """Calcula lo que debe dar el analisis, de forma independiente al programa en C."""
+    por_maquina = {}
+    for fila in FILAS:
+        id_, maquina, ts, temp, corriente, vibracion, est = fila.split(",")
+        valida = (est.lower() == "ok" and "" not in (ts, temp, corriente, vibracion)
+                  and float(temp) != -999.0)
+        datos = por_maquina.setdefault(maquina, {"validas": 0, "descartadas": 0, "temps": []})
+        if valida:
+            datos["validas"] += 1
+            datos["temps"].append(float(temp))
+        else:
+            datos["descartadas"] += 1
+    esperado = {}
+    for maquina, d in por_maquina.items():
+        t = d["temps"]
+        esperado[maquina] = {
+            "validas": d["validas"], "descartadas": d["descartadas"],
+            "temp_min": min(t), "temp_max": max(t), "temp_prom": round(sum(t) / len(t), 2),
+            "sobre_umbral": sum(1 for x in t if x > UMBRAL),
+        }
+    return esperado
+
+
+ESPERADO = estadisticas_esperadas()
+CAMPOS = ["validas", "descartadas", "temp_min", "temp_max", "temp_prom", "sobre_umbral"]
 
 
 def pagina(desde_id, limite):
@@ -119,6 +150,9 @@ class Manejador(BaseHTTPRequestHandler):
         print("POST", self.path, cuerpo, "| tipo:", self.headers.get("Content-Type"), flush=True)
         if not self.autorizado():
             return
+        if self.path == "/api/v1/respuestas/analisis":
+            self.analisis(cuerpo)
+            return
         if self.path != "/api/v1/respuestas/descarga":
             self.responder(404, "no existe\n")
             return
@@ -129,6 +163,27 @@ class Manejador(BaseHTTPRequestHandler):
             return
         ok = datos.get("filas_unicas") == TOTAL and datos.get("suma_ids") == SUMA_IDS
         self.responder(200, "correcto=%d\n" % (1 if ok else 0))
+
+    def analisis(self, cuerpo):
+        if estado["intentos"] >= MAX_INTENTOS:
+            self.responder(403, "intentos_restantes=0\n")
+            return
+        try:
+            enviado = {m["maquina"]: m for m in json.loads(cuerpo)["maquinas"]}
+        except (json.JSONDecodeError, KeyError, TypeError):
+            self.responder(400, "json invalido\n")
+            return
+        estado["intentos"] += 1
+        lineas = []
+        for maquina in sorted(ESPERADO):
+            for campo in CAMPOS:
+                try:
+                    bien = abs(float(enviado[maquina][campo]) - ESPERADO[maquina][campo]) <= 0.01
+                except (KeyError, TypeError, ValueError):
+                    bien = False
+                lineas.append("%s.%s=%s" % (maquina, campo, "ok" if bien else "mal"))
+        lineas.append("intentos_restantes=%d" % (MAX_INTENTOS - estado["intentos"]))
+        self.responder(200, "\n".join(lineas) + "\n")
 
     def log_message(self, *args):
         pass

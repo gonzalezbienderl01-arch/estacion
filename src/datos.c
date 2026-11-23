@@ -213,3 +213,61 @@ int datos_resumen_lecturas(sqlite3 *db, long long *filas_unicas, long long *suma
     sqlite3_finalize(st);
     return rc == SQLITE_ROW ? 0 : -1;
 }
+
+/* Toda la estadistica se calcula en SQL (el reto prohibe bucles en C para esto).
+ * La subconsulta marca cada fila como valida (1) o descartada (0); la consulta de
+ * afuera agrupa por maquina. Las funciones MIN/MAX/AVG ignoran los NULL del CASE,
+ * asi solo cuentan las filas validas. */
+static const char *SQL_ANALISIS =
+    "SELECT maquina,"
+    "       COALESCE(SUM(v), 0),"
+    "       COUNT(*) - COALESCE(SUM(v), 0),"
+    "       MIN(CASE WHEN v = 1 THEN temp END),"
+    "       MAX(CASE WHEN v = 1 THEN temp END),"
+    "       ROUND(AVG(CASE WHEN v = 1 THEN temp END), 2),"
+    "       COALESCE(SUM(CASE WHEN v = 1 AND temp > ?1 THEN 1 END), 0) "
+    "FROM ("
+    "  SELECT maquina, temp,"
+    "         CASE WHEN estado = 'ok' COLLATE NOCASE"
+    "               AND temp <> -999.0"
+    "               AND ts IS NOT NULL AND temp IS NOT NULL"
+    "               AND corriente IS NOT NULL AND vibracion IS NOT NULL"
+    "              THEN 1 ELSE 0 END AS v"
+    "  FROM lecturas_planta WHERE maquina IS NOT NULL) "
+    "GROUP BY maquina ORDER BY maquina;";
+
+int datos_analizar(sqlite3 *db, double umbral, Analisis *salida, int max)
+{
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(db, SQL_ANALISIS, -1, &st, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "Error preparando el analisis: %s\n", sqlite3_errmsg(db));
+        return -1;
+    }
+    sqlite3_bind_double(st, 1, umbral);
+
+    int n = 0;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        if (n >= max) {
+            fprintf(stderr, "Error: hay mas de %d maquinas en la base\n", max);
+            sqlite3_finalize(st);
+            return -1;
+        }
+        Analisis *a = &salida[n++];
+        snprintf(a->maquina, sizeof a->maquina, "%s", (const char *)sqlite3_column_text(st, 0));
+        a->validas = sqlite3_column_int64(st, 1);
+        a->descartadas = sqlite3_column_int64(st, 2);
+        a->hay_temp = sqlite3_column_type(st, 3) != SQLITE_NULL;
+        a->temp_min = a->hay_temp ? sqlite3_column_double(st, 3) : 0.0;
+        a->temp_max = a->hay_temp ? sqlite3_column_double(st, 4) : 0.0;
+        a->temp_prom = a->hay_temp ? sqlite3_column_double(st, 5) : 0.0;
+        a->sobre_umbral = sqlite3_column_int64(st, 6);
+    }
+    if (rc != SQLITE_DONE) {
+        fprintf(stderr, "Error calculando el analisis: %s\n", sqlite3_errmsg(db));
+        sqlite3_finalize(st);
+        return -1;
+    }
+    sqlite3_finalize(st);
+    return n;
+}

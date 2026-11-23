@@ -17,7 +17,7 @@ Requisitos: `gcc`, `make`, `libcurl` (con cabeceras) y la amalgamation de SQLite
 
     ./estacion config      # Nivel 0 (hecho)
     ./estacion descargar   # Nivel 1 (hecho)
-    ./estacion analizar    # Nivel 2 (pendiente)
+    ./estacion analizar    # Nivel 2 (hecho)
     ./estacion enviar      # Niveles 3 y 4 (pendiente)
     ./estacion escuchar    # Nivel 5 (pendiente)
 
@@ -26,6 +26,7 @@ Requisitos: `gcc`, `make`, `libcurl` (con cabeceras) y la amalgamation de SQLite
 - `src/main.c`: lee `argv`, busca el subcomando en una tabla y lo ejecuta.
 - `src/comandos.c`: Nivel 0 (`config`).
 - `src/descarga.c`: Nivel 1 (`descargar`).
+- `src/analisis.c`: Nivel 2 (`analizar`).
 - `src/red.c`: todo lo de libcurl (un solo easy handle reutilizado, GET y POST).
 - `src/datos.c`: todo lo de SQLite (sentencias preparadas).
 - `pruebas/servidor_falso.py`: servidor de práctica que corre solo en tu PC.
@@ -46,6 +47,16 @@ Requisitos: `gcc`, `make`, `libcurl` (con cabeceras) y la amalgamation de SQLite
 - Si el servidor responde 429 se espera 1 s y se reintenta (máximo 3 veces). Repetir `descargar`
   no duplica filas.
 
+- **Análisis (Nivel 2):** una sola consulta SQL agrupa por máquina. Una subconsulta marca cada fila como
+  válida o descartada (`estado` no es `ok`, `temp = -999.0` o algún campo `NULL`) y `MIN`, `MAX`, `AVG`
+  y `COUNT` se calculan con SQL, sin bucles en C. `AVG` se redondea con `ROUND(..., 2)` y el umbral
+  entra como parámetro (`?1`) leído de la tabla `config`.
+- **JSON con `snprintf`:** el cuerpo se arma en un buffer fijo y cada `snprintf` comprueba el espacio
+  restante. Cada envío al servidor gasta uno de los 10 intentos, así que primero se muestra la tabla
+  en pantalla y se compara antes de volver a enviar.
+- **Errores HTTP compartidos:** `respuesta_ok()` en `red.c` traduce 200/400/401/403/429 a mensajes
+  claros y la usan `descargar` y `analizar`.
+
 ## Pruebas sin el servidor real
 
 En una terminal:
@@ -57,7 +68,9 @@ En otra:
     export ITLA_HOST=127.0.0.1
     export ITLA_MATRICULA=<tu matricula>
     export ITLA_TOKEN=abcdefghijklmnopqrstuvwxyz012345   # token de PRUEBA, solo sirve con el servidor falso
+    ./estacion config
     ./estacion descargar
+    ./estacion analizar
 
 Para revisar la memoria: `valgrind --leak-check=full ./estacion descargar`.
 

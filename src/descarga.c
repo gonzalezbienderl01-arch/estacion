@@ -169,27 +169,6 @@ static int procesar_pagina(sqlite3 *db, sqlite3_stmt *st, char *csv, ResumenPagi
 
 /* ---------- Peticiones ---------- */
 
-/* Devuelve 1 si el codigo fue 200; si no, explica el motivo y devuelve 0. */
-static int codigo_ok(const Respuesta *resp, const char *que)
-{
-    switch (resp->codigo_http) {
-    case 200:
-        return 1;
-    case 400:
-        fprintf(stderr, "HTTP 400 en %s: el servidor no entendio la peticion\n", que);
-        break;
-    case 401:
-        fprintf(stderr, "HTTP 401 en %s: token rechazado. Revisa ITLA_TOKEN e ITLA_MATRICULA\n", que);
-        break;
-    case 429:
-        fprintf(stderr, "HTTP 429 en %s: demasiadas peticiones por segundo\n", que);
-        break;
-    default:
-        fprintf(stderr, "HTTP %ld inesperado en %s\n", resp->codigo_http, que);
-    }
-    return 0;
-}
-
 /* Pide una pagina. Si el servidor responde 429 espera 1 s y reintenta. */
 static int pedir_pagina(Red *red, long long desde_id, Respuesta *resp)
 {
@@ -209,7 +188,7 @@ static int pedir_pagina(Red *red, long long desde_id, Respuesta *resp)
         pausa_ms(1000);
     }
 
-    if (!codigo_ok(resp, "lecturas")) {
+    if (!respuesta_ok(resp, "lecturas")) {
         respuesta_liberar(resp);
         return -1;
     }
@@ -268,7 +247,7 @@ static int enviar_resultado(Red *red, sqlite3 *db)
     if (red_post_json(red, "/api/v1/respuestas/descarga", json, &resp) != 0)
         return -1;
 
-    int correcto = codigo_ok(&resp, "respuestas/descarga") &&
+    int correcto = respuesta_ok(&resp, "respuestas/descarga") &&
                    strstr(resp.datos, "correcto=1") != NULL;
     respuesta_liberar(&resp);
 

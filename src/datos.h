@@ -49,4 +49,22 @@ int  datos_insertar_lectura(sqlite3 *db, sqlite3_stmt *st, const Lectura *l);
 /* Cuenta las filas y suma los ids con SQL (no con bucles en C). 0 = bien, -1 = error. */
 int  datos_resumen_lecturas(sqlite3 *db, long long *filas_unicas, long long *suma_ids);
 
+/* Resultado del analisis de una maquina (Nivel 2). */
+#define ANALISIS_MAX_MAQUINAS 16
+typedef struct {
+    char      maquina[16];
+    long long validas;
+    long long descartadas;
+    int       hay_temp;         /* 0 si la maquina no tiene ninguna fila valida */
+    double    temp_min;
+    double    temp_max;
+    double    temp_prom;        /* ya redondeada a 2 decimales por SQL */
+    long long sobre_umbral;     /* filas validas con temp > umbral */
+} Analisis;
+
+/* Una sola consulta SQL agrupa por maquina. Una fila es invalida si estado no es "ok",
+ * si temp vale -999.0 o si falta cualquier campo. Devuelve cuantas maquinas llenó
+ * (0 o mas) o -1 si hay error. */
+int  datos_analizar(sqlite3 *db, double umbral, Analisis *salida, int max);
+
 #endif
